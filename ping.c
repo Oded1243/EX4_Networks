@@ -225,40 +225,60 @@ int main(int argc, char *argv[])
 
     struct sockaddr_in dest_addr;
 
-    if (argc != 4)
+    // שינוי 1: אתחול כמות הפינגים ל-4 כברירת מחדל
+    FlagC = 4;   
+    flood = 0;   
+    char *ip_str = NULL; 
+    
+    int opt;
+
+    while ((opt = getopt(argc, argv, "a:c:f")) != -1) 
     {
-        printf("Usage: %s <IP address> <count> <flood (1=yes, 0=no)>\n", argv[0]);
+        switch (opt) 
+        {
+            case 'a':
+                ip_str = optarg;
+                break;
+            case 'c':
+                FlagC = atoi(optarg);
+                break;
+            case 'f':
+                flood = 1;
+                break;
+            default: /* '?' */
+                fprintf(stderr, "Usage: %s -a <IP address> [-c <count>] [-f]\n", argv[0]);
+                return 1;
+        }
+    }
+
+    // שינוי 2: כעת רק הכתובת היא חובה
+    // (אבל עדיין בודקים שהמשתמש לא הזין ידנית מספר שלילי או 0)
+    if (ip_str == NULL)
+    {
+        printf("Missing IP address (-a is required).\n");
+        printf("Usage: %s -a <IP address> [-c <count>] [-f]\n", argv[0]);
+        return 1;
+    }
+
+    if (FlagC <= 0)
+    {
+        printf("Invalid count number: %d\n", FlagC);
         return 1;
     }
 
     proto2 = getprotobyname("icmp");
 
-    char *ip_str = argv[1];
-    FlagC = atoi(argv[2]);
-    flood = atoi(argv[3]);
-
-    if (FlagC <= 0)
-    {
-        printf("Usage: invalid count\n");
-        return 1;
-    }
-
-    // CHANGE 4: Map shared memory so child and parent share the 'suc_counter' variable
+    // המשך הקוד זהה לחלוטין...
     suc_counter = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-
     total_rtt = mmap(NULL, sizeof(double), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON, -1, 0);
-
     min_time = mmap(NULL, sizeof(double), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON, -1, 0);
-
     max_time = mmap(NULL, sizeof(double), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON, -1, 0);
 
-    *suc_counter = 0; // Initialize shared variable
-
+    *suc_counter = 0; 
     *total_rtt = 0.0;
-
     *min_time = 0.0;
-
     *max_time = 0.0;
+    
     memset(&dest_addr, 0, sizeof(dest_addr));
     dest_addr.sin_family = AF_INET;
 
@@ -276,10 +296,13 @@ int main(int argc, char *argv[])
     }
     else
     {
-        printf("Pinging %s with %d bytes of data:\n", ip_str, PACKET_SIZE);
+        if (flood) 
+            printf("FLOODING %s with %d bytes of data:\n", ip_str, PACKET_SIZE);
+        else 
+            printf("Pinging %s with %d bytes of data:\n", ip_str, PACKET_SIZE);
+            
         ping(&dest_addr);
 
-        // Wait for listener to finish (so we have the final count)
         wait(NULL);
     }
 
@@ -289,14 +312,16 @@ int main(int argc, char *argv[])
     double timer = (end_t.tv_sec - start_t.tv_sec) * 1000.0 +
                    (end_t.tv_usec - start_t.tv_usec) / 1000.0;
 
-    // CHANGE 5: Print using the value of the shared pointer
     printf("%d packets transmitted, %d recieved, time %.3fms\n", FlagC, *suc_counter, timer);
-    printf("rtt min/avg/max = %.3f %.3f %.3f \n", *min_time, *total_rtt / *suc_counter, *max_time);
+    
+    if (*suc_counter > 0)
+        printf("rtt min/avg/max = %.3f %.3f %.3f \n", *min_time, *total_rtt / *suc_counter, *max_time);
+    else
+        printf("rtt min/avg/max = 0.000 / 0.000 / 0.000\n");
 
-    // Clean up shared memory
     munmap(suc_counter, sizeof(int));
     munmap(min_time, sizeof(double));
-    munmap(max_time,sizeof(double))
-    munmap(total_rtt ,sizeof(double))
+    munmap(max_time,sizeof(double));
+    munmap(total_rtt ,sizeof(double));
     return 0;
 }
