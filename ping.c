@@ -296,6 +296,7 @@ int main(int argc, char *argv[])
     // Clean up shared memory
     munmap(suc_counter, sizeof(int));
     munmap(min_time, sizeof(double));
-
+    munmap(max_time,sizeof(double))
+    munmap(total_rtt ,sizeof(double))
     return 0;
 }
