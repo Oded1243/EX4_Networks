@@ -6,16 +6,9 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <string.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <sys/wait.h>
 #include <sys/time.h>
-#include <sys/mman.h>
 #include <poll.h>
 #include <ifaddrs.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-
 #define FLAG_SYN 0x02 // 0000 0010
 #define FLAG_RST 0x04 // 0000 0100
 #define FLAG_ACK 0x10 // 0001 0000
@@ -205,20 +198,10 @@ void send_packet_TCP(int sd, struct sockaddr_in *dest_addr, int port, uint32_t m
         // perror("sendto failed"); // אפשר להחזיר את ההדפסה אם רוצים דיבאג
     }
 }
-void send_packet_UDP(int sd, struct sockaddr_in *dest_addr, int port)
+void send_packet_UDP(int sd, struct sockaddr_in *dest_addr)
 {
-    char buffer[sizeof(struct UDPHeader)];        // buffer for UDP
-    memset(&buffer, 0, sizeof(struct UDPHeader)); // Set buffer to 0
-
-    struct UDPHeader *udp = (struct UDPHeader *)buffer;
-
-    // Set UDP headers
-    udp->source_port = htons(12345);
-    udp->dest_port = htons(port);
-    udp->len = sizeof(struct UDPHeader);
-    udp->check = 0;
-
-    if (sendto(sd, buffer, sizeof(struct UDPHeader), 0, (struct sockaddr *)dest_addr, sizeof(*dest_addr)) < 0)
+    // שולח פאקט ריק. המערכת תוסיף לבד כותרות UDP תקינות
+    if (sendto(sd, NULL, 0, 0, (struct sockaddr *)dest_addr, sizeof(*dest_addr)) < 0)
     {
         perror("sendto UDP failed");
     }
@@ -331,21 +314,19 @@ int main(int argc, char *argv[])
     }
     else if (type != NULL && strcasecmp(type, "udp") == 0)
     {
-        // 1. סוקט לשליחה: אנחנו שולחים UDP רגיל
-        // המערכת תוסיף את ה-IP Header לבד כי לא שמנו IP_HDRINCL
-        int send_sd = socket(AF_INET, SOCK_RAW, IPPROTO_UDP);
-        if (send_sd < 0)
+        // סוקט לשליחת UDP ולקבלת תשובות UDP (במקרה של הצלחה)
+        int udp_sd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (udp_sd < 0)
         {
             perror("UDP Socket creation failed");
             return 1;
         }
 
-        // 2. סוקט לקבלה: אנחנו מאזינים להודעות שגיאה של ICMP
-        int recv_sd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-        if (recv_sd < 0)
+        // סוקט לקבלת שגיאות ICMP (במקרה של פורט סגור)
+        int icmp_sd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+        if (icmp_sd < 0)
         {
             perror("ICMP Socket creation failed");
-            close(send_sd);
             return 1;
         }
 
@@ -359,63 +340,65 @@ int main(int argc, char *argv[])
         }
 
         printf("Starting UDP Scan on %s...\n", ip_str);
-
-        // באפר גדול לקריאת התשובות (מכיל IP + ICMP + IP מקורי + UDP מקורי)
-        char recv_buff[4096];
+        char buffer[4096];
 
         for (int port = 1; port <= 150; port++) // סורק 100 פורטים
         {
-            // שליחת הפאקט דרך סוקט השליחה
-            send_packet_UDP(send_sd, &dest_addr, port);
+            dest_addr.sin_port = htons(port);
 
-            // הגדרת האזנה עם Timeout קצר (למשל 200ms)
-            // אנחנו משתמשים ב-poll כדי לחכות לתשובה בסוקט ה-ICMP
-            struct pollfd fds[1];
-            fds[0].fd = recv_sd; // מאזינים לסוקט ה-ICMP
+            // שליחת הפאקט
+            send_packet_UDP(udp_sd, &dest_addr);
+
+            // --- התיקון: האזנה לשני הסוקטים ---
+            struct pollfd fds[2];
+
+            // ערוץ 1: האם קיבלנו UDP חזרה? (הצלחה)
+            fds[0].fd = udp_sd;
             fds[0].events = POLLIN;
 
-            int ret = poll(fds, 1, 200); // 200 מילי-שניות המתנה
+            // ערוץ 2: האם קיבלנו ICMP חזרה? (כישלון)
+            fds[1].fd = icmp_sd;
+            fds[1].events = POLLIN;
+
+            // מחכים לתשובה באחד מהערוצים
+            int ret = poll(fds, 2, 2000); // 2 שניות timeout
 
             if (ret > 0)
             {
-                // התקבל מידע! בוא נבדוק אם זו הודעת "פורט סגור"
-                struct sockaddr_in source_addr;
-                socklen_t addr_len = sizeof(source_addr);
-                int bytes = recvfrom(recv_sd, recv_buff, sizeof(recv_buff), 0, (struct sockaddr *)&source_addr, &addr_len);
-
-                if (bytes > 0)
+                // בדיקה 1: התקבלה תשובה ב-UDP (פורט פתוח!)
+                if (fds[0].revents & POLLIN)
                 {
-                    struct IPHeader *ip_resp = (struct IPHeader *)recv_buff;
-                    int ip_len = ip_resp->ihl * 4;
+                    // חובה לקרוא את המידע כדי לנקות את הסוקט
+                    recvfrom(udp_sd, buffer, sizeof(buffer), 0, NULL, NULL);
+                    printf("[+] Port %d is OPEN\n", port);
+                }
+                // בדיקה 2: התקבלה הודעת ICMP (פורט סגור)
+                else if (fds[1].revents & POLLIN)
+                {
+                    struct sockaddr_in source_addr;
+                    socklen_t addr_len = sizeof(source_addr);
+                    int bytes = recvfrom(icmp_sd, buffer, sizeof(buffer), 0, (struct sockaddr *)&source_addr, &addr_len);
 
-                    // --- בדיקה 1: האם קיבלנו UDP חזרה? (פורט פתוח לפי המטלה) ---
-                    if (ip_resp->protocol == 17) // 17 = UDP
+                    if (bytes > 0)
                     {
-                        // אם קיבלנו חבילת UDP חזרה, סימן שהשירות הקשיב וענה לנו
-                        printf("Port %d is OPEN\n", port);
-                    }
-
-                    // --- בדיקה 2: האם קיבלנו ICMP? (פורט סגור/שגיאה) ---
-                    else if (ip_resp->protocol == 1) // 1 = ICMP
-                    {
-                        // רק עכשיו, כשאנחנו יודעים שזה ICMP, מותר לנו להגדיר את המשתנים האלה:
-                        unsigned char *icmp_data = (unsigned char *)(recv_buff + ip_len);
-                        int icmp_type = icmp_data[0];
-                        int icmp_code = icmp_data[1];
-
-                        // Type 3 = Destination Unreachable
-                        if (icmp_type == 3)
+                        struct IPHeader *ip_header = (struct IPHeader *)buffer;
+                        // וידוא שזה אכן ICMP
+                        if (ip_header->protocol == 1)
                         {
-                            // Code 3 = Port Unreachable (הפורט סגור בוודאות)
-                            if (icmp_code == 3)
+                            // דילוג על ה-IP Header כדי להגיע ל-ICMP Header
+                            int ip_len = ip_header->ihl * 4;
+                            unsigned char *icmp_data = (unsigned char *)(buffer + ip_len);
+                            int type = icmp_data[0];
+                            int code = icmp_data[1];
+
+                            // Type 3 = Dest Unreachable, Code 3 = Port Unreachable
+                            if (type == 3 && code == 3)
                             {
-                                printf("Port %d is CLOSED\n", port);
+                                printf("[-] Port %d is CLOSED (ICMP Port Unreachable)\n", port);
                             }
-                            // קודים אחרים (כמו 1, 2, 9, 10, 13) הם חסימות Firewall
-                            // לפי המטלה, אם יש "host unavailable" או סינון, נחשיב כסגור
                             else
                             {
-                                printf("Port %d is CLOSED (Filtered/Host Unreachable)\n", port);
+                                printf("[-] Port %d is FILTERED (ICMP Type %d)\n", port, type);
                             }
                         }
                     }
@@ -423,17 +406,12 @@ int main(int argc, char *argv[])
             }
             else
             {
-                // Timeout! לא התקבלה הודעת שגיאה.
-                printf("[+] Port %d is CLOSED (Timeout)\n", port);
+                // Timeout - לא התקבל כלום
+                printf("[-] Port %d is CLOSED (Timeout)\n", port);
             }
-
-            // חשוב מאוד! מערכות הפעלה מגבילות את קצב הודעות השגיאה של ICMP (Rate Limit).
-            // אם תסרוק מהר מדי, תקבל Open שקריים כי המערכת פשוט לא תשלח את השגיאה.
-            usleep(1000); // מחכה 50 מילי-שניות בין פורטים
         }
-
-        close(send_sd);
-        close(recv_sd);
+        close(udp_sd);
+        close(icmp_sd);
     }
     else
     {
