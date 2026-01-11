@@ -1,16 +1,11 @@
 #define _GNU_SOURCE
+#define _GNU_SOURCE
 #include <stdio.h>
-#include <stdlib.h>
 #include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+#include <arpa/inet.h>   // כולל בתוכו את netinet/in.h
 #include <unistd.h>
 #include <string.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <sys/wait.h>
 #include <sys/time.h>
-#include <sys/mman.h>
 #include <poll.h>
 
 #define PACKET_SIZE 64
