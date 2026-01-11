@@ -2,7 +2,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
-#include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <string.h>
@@ -62,6 +61,7 @@ int *suc_counter;
 double *total_rtt;
 double *max_time;
 double *min_time;
+int printing = 0;
 int pid = -1;
 int FlagC;
 int flood = 0;
@@ -92,6 +92,7 @@ void display(void *buf, int bytes)
     double time_ms = 0;
     if (icmp->type == 0) // Echo Reply
     {
+        printing = 1;
         if (bytes >= sizeof(struct iphdr) + sizeof(struct icmphdr) + sizeof(struct timeval))
         {
             struct timeval *tv_sent = (struct timeval *)((char *)icmp + sizeof(struct icmphdr));
